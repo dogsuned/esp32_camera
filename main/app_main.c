@@ -34,6 +34,10 @@
 #include "bitmap.h"
 #include "led.h"
 #include "qr_recoginize.h"
+#include "app_console.h"
+#include "app_led.h"
+#include "lcd.h"
+
 static void handle_grayscale_pgm(http_context_t http_ctx, void* ctx);
 static void handle_rgb_bmp(http_context_t http_ctx, void* ctx);
 static void handle_rgb_bmp_stream(http_context_t http_ctx, void* ctx);
@@ -53,10 +57,49 @@ EventGroupHandle_t s_wifi_event_group;
 static const int CONNECTED_BIT = BIT0;
 static esp_ip4_addr_t s_ip_addr;
 static camera_pixelformat_t s_pixel_format;
+static int g_wifi_config = 0;
+char ssid[32] = {0}, passwd[64] = {0};
 
 #define CAMERA_PIXEL_FORMAT CAMERA_PF_JPEG
-#define CAMERA_FRAME_SIZE CAMERA_FS_SVGA
+#define CAMERA_FRAME_SIZE CAMERA_FS_QVGA
 
+int cmd_wifi_config(int argc, char *argv[])
+{
+    if (argc == 3) {
+        if (strlen(argv[1]) < sizeof(ssid) && strlen(argv[2]) < sizeof(passwd)) {
+            strcpy(ssid, argv[1]);
+            strcpy(passwd, argv[2]);
+            g_wifi_config = 1;
+            printf("got ssid: %s, password: %s\n", ssid, passwd);
+        } else {
+            printf("invalid argument!\n");
+        }
+    }
+
+    return 0;
+}
+
+static void camera_frame_display(void){
+    unsigned int frame = 0;
+    esp_err_t ret;
+
+    if(get_light_state())
+        led_open();
+    while (true) {
+        esp_err_t err = camera_run();
+        if (err != ESP_OK) {
+            ESP_LOGD(TAG, "Camera capture failed with error = %d", err);
+            break;
+        }
+
+        // camera_get_fb data
+        printf("----- frame: %d, size: %d, width: %d, height: %d -----\n", frame++, camera_get_data_size(), camera_get_fb_width(), camera_get_fb_height());
+        ret = lcd_display_jpg((char *)camera_get_fb(), camera_get_fb_width(), camera_get_fb_height());
+        if (ret != ESP_OK) {
+            printf("failed show jpg\n");
+        }
+    }
+}
 
 void app_main()
 {
@@ -89,6 +132,14 @@ void app_main()
         .xclk_freq_hz = CONFIG_XCLK_FREQ,
     };
 
+    printf("led service init: %d\n", app_led_init());
+    printf("console init: %d\n", app_console_init());
+
+    lcd_init();
+    while (1) {
+        vTaskDelay(300 / portTICK_PERIOD_MS);
+    }
+
     camera_model_t camera_model;
     err = camera_probe(&camera_config, &camera_model);
     if (err != ESP_OK) {
@@ -119,6 +170,14 @@ void app_main()
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
         return;
     }
+
+    camera_frame_display();
+
+    while (1) {
+        printf("--- wait ---\n");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+
 //    databuf = (char *) malloc(BUF_SIZE);
     initialise_wifi();
 
@@ -326,23 +385,32 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
 static void initialise_wifi(void)
 {
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = "dell-wifi",
+            .password = "66666666"
+        }
+    };
+
+    // while (g_wifi_config == 0) {
+    //     vTaskDelay(200 / portTICK_PERIOD_MS);
+    // }
+
+    // strcpy((char *)wifi_config.sta.ssid, ssid);
+    // strcpy((char *)wifi_config.sta.password, passwd);
+
     tcpip_adapter_init();
     s_wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
 //    ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = CONFIG_WIFI_SSID,
-            .password = CONFIG_WIFI_PASSWORD,
-        },
-    };
+
     ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
     ESP_ERROR_CHECK( esp_wifi_start() );
     ESP_ERROR_CHECK( esp_wifi_set_ps(WIFI_PS_NONE) );
-    ESP_LOGI(TAG, "Connecting to \"%s\"", wifi_config.sta.ssid);
+    ESP_LOGI(TAG, "Connecting to \"%s\", password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
     xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT, false, true, portMAX_DELAY);
     ESP_LOGI(TAG, "Connected");
 }
